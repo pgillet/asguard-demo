@@ -1,0 +1,39 @@
+stages:
+  - build
+  - deploy
+
+build:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
+  script:
+    - export GOOGLE_APPLICATION_CREDENTIALS=/kaniko/kaniko-secret.json
+    - echo $GOOGLE_APPLICATION_CREDENTIALS_BASE64 | base64 -d > $GOOGLE_APPLICATION_CREDENTIALS
+    - /kaniko/executor --context $CI_PROJECT_DIR --dockerfile Dockerfile-init --build-arg VAULT_ADDR=$VAULT_ADDR --build-arg VAULT_ROOT_TOKEN_ID=$VAULT_ROOT_TOKEN_ID --build-arg VAULT_KEY_NAME=$VAULT_KEY_NAME --destination eu.gcr.io/$GCLOUD_PROJECT_ID/init-$CI_PROJECT_NAME:$CI_COMMIT_TAG
+    - /kaniko/executor --context $CI_PROJECT_DIR --dockerfile Dockerfile-app --build-arg VAULT_ADDR=$VAULT_ADDR --build-arg VAULT_ROOT_TOKEN_ID=$VAULT_ROOT_TOKEN_ID --build-arg VAULT_KEY_NAME=$VAULT_KEY_NAME --destination eu.gcr.io/$GCLOUD_PROJECT_ID/$CI_PROJECT_NAME:$CI_COMMIT_TAG
+  only:
+    - tags
+
+
+deploy:
+  stage: deploy
+  image:
+    name: google/cloud-sdk:latest
+  script:
+    # Authenticate with GKE
+    - echo $GOOGLE_APPLICATION_CREDENTIALS_BASE64 | base64 -di > key.json
+    - gcloud auth activate-service-account --key-file=key.json
+    - gcloud config set project $GCLOUD_PROJECT_ID
+    - gcloud container clusters get-credentials $CLUSTER_NAME --zone europe-west1-b
+    # Create Kubernetes secret with Vault info
+    - kubectl delete secret vault-secret || true
+    - kubectl create secret generic vault-secret --from-literal=vault-addr=$VAULT_ADDR --from-literal=vault-key-name=$VAULT_KEY_NAME --from-literal=vault-role=$VAULT_ROLE
+    # Install envsubst
+    - apt-get install -y gettext-base
+    # Deploy
+    - cat k8s/deployment.yml | envsubst | kubectl apply -f -
+
+  only:
+    - tags
+

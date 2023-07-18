@@ -1,0 +1,8 @@
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: asguard-ingress
+spec:
+  backend:
+    serviceName: asguard-svc
+    servicePort: 80

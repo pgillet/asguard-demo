@@ -1,0 +1,32 @@
+FROM gcr.io/distroless/base:debug AS build-env
+
+SHELL ["/busybox/sh", "-c"]
+
+WORKDIR /asguard
+ENV PATH /asguard:${PATH}
+
+# Install jq
+ARG JQ_VERSION=1.6
+RUN wget https://github.com/stedolan/jq/releases/download/jq-${JQ_VERSION}/jq-linux64 -O jq
+
+# Install cat, tar, wget and cp for bootstrap.sh later execution
+ARG BUSYBOX_VERSION=1.30.0-i686
+RUN wget https://busybox.net/downloads/binaries/${BUSYBOX_VERSION}/busybox_CAT -O cat
+RUN wget https://busybox.net/downloads/binaries/${BUSYBOX_VERSION}/busybox_TAR -O tar
+RUN wget https://busybox.net/downloads/binaries/${BUSYBOX_VERSION}/busybox_WGET -O wget
+RUN wget https://busybox.net/downloads/binaries/${BUSYBOX_VERSION}/busybox_CP -O cp
+
+COPY bootstrap.sh ./
+
+RUN chmod -R 500 /asguard
+
+
+# Init container
+FROM gcr.io/distroless/base
+
+USER nobody:nobody
+COPY --chown=nobody:nobody --from=build-env /asguard /asguard
+WORKDIR /asguard
+ENV PATH /asguard:${PATH}
+
+

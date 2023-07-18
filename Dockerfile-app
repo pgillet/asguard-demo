@@ -1,0 +1,82 @@
+# Start by obfuscating the application
+FROM python:3.5.3-slim AS obfuscate
+
+RUN pip install pyarmor
+COPY app/sensitive-app.py app/
+# Python version must be the same as the target version in the final image
+RUN pyarmor obfuscate app/sensitive-app.py
+# Creates a folder dist with the obfuscated Python script
+
+
+# Then encrypting the application
+FROM gcr.io/distroless/base:debug AS build-env
+
+SHELL ["/busybox/sh", "-c"]
+
+# Define build arg
+ARG VAULT_KEY_NAME
+
+# Define env variable
+ENV VAULT_KEY_NAME ${VAULT_KEY_NAME}
+
+ARG VAULT_ADDR
+ARG VAULT_ROOT_TOKEN_ID
+
+WORKDIR /dist
+ENV PATH /dist:${PATH}
+
+# Install jq
+ARG JQ_VERSION=1.6
+RUN wget https://github.com/stedolan/jq/releases/download/jq-${JQ_VERSION}/jq-linux64 -O jq
+RUN chmod u+x jq
+
+# Embed the application. DO NOT USE ADD HERE!
+COPY app/ app/
+# With only the obfuscated Python script
+RUN rm app/sensitive-app.py
+COPY --from=obfuscate /dist/ app/
+
+# Package the application
+RUN tar cvf app.tar.gz app/
+
+# Create a named encryption key
+# If the key already exists, this has no effect
+RUN wget \
+    --header "X-Vault-Token: ${VAULT_ROOT_TOKEN_ID}" \
+    --post-data "" \
+    ${VAULT_ADDR}/v1/transit/keys/${VAULT_KEY_NAME}
+
+# Rotates the version of the named key
+RUN wget \
+    --header "X-Vault-Token: ${VAULT_ROOT_TOKEN_ID}" \
+    --post-data "" \
+    ${VAULT_ADDR}/v1/transit/keys/${VAULT_KEY_NAME}/rotate
+
+# Generate data key
+# The name specified as part of the URL is the name of the encryption key
+# created in the init container and used to encrypt the datakey
+RUN wget \
+    --header "X-Vault-Token: ${VAULT_ROOT_TOKEN_ID}" \
+    --post-data "" \
+    ${VAULT_ADDR}/v1/transit/datakey/plaintext/${VAULT_KEY_NAME} -O datakey.json
+
+RUN cat datakey.json | jq -r ".data.ciphertext" > passphrase.enc
+
+# Encrypt the binary with the plaintext key 
+RUN cat datakey.json | jq -r ".data.plaintext" | openssl aes-256-cbc -salt -in app.tar.gz -out app.enc -pass stdin
+
+# Delete unsecured files (delete all files that do not match *.enc)
+RUN find /dist/* ! -name '*.enc' -exec rm -rf '{}' +
+
+RUN chmod -R 500 /dist
+
+
+# App container
+FROM gcr.io/distroless/python3
+
+USER nobody:nobody
+COPY --chown=nobody:nobody --from=build-env /dist/ /dist/
+CMD ["python app/sensitive-app.py"]
+# The entrypoint will be mounted from the init container
+ENTRYPOINT ["/asguard/bootstrap.sh"]
+
